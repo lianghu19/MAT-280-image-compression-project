@@ -4,6 +4,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from PIL import Image
+import os
 
 # Page configuration
 st.set_page_config(page_title="SVD Analysis Tool", layout="wide")
@@ -20,19 +21,12 @@ st.markdown("""
 
 st.title("SVD Matrix Decomposition for Image Compression")
 
-# --- Initialize Session State ---
-if 'svd_cache' not in st.session_state:
-    st.session_state.svd_cache = {}
-if 'k_val' not in st.session_state:
-    st.session_state.k_val = 1 # Default value
+# --- Configuration ---
+DEFAULT_IMAGE = "DT_photo.png"
 
-# 1. Input Section
-st.markdown("### 1. Data Input")
-uploaded_files = st.file_uploader(
-    "Upload one or more images for analysis", 
-    type=['jpg', 'png', 'jpeg'],
-    accept_multiple_files=True
-)
+# --- Initialize Session State ---
+if 'k_val' not in st.session_state:
+    st.session_state.k_val = 1
 
 @st.cache_data
 def compute_svd(img_array):
@@ -40,7 +34,6 @@ def compute_svd(img_array):
     return U, s, Vt
 
 def find_elbow_point(x_values, y_values):
-    # looks for point of maximum curvature on a curve
     p1 = np.array([x_values[0], y_values[0]])
     p2 = np.array([x_values[-1], y_values[-1]])
     max_dist = 0
@@ -54,34 +47,18 @@ def find_elbow_point(x_values, y_values):
     return elbow_idx
 
 # --- Main Logic ---
-if uploaded_files:
-    # Process and cache each uploaded file if not already in cache
-    for uploaded_file in uploaded_files:
-        if uploaded_file.name not in st.session_state.svd_cache:
-            with st.spinner(f"Processing & caching {uploaded_file.name}..."):
-                image_original = Image.open(uploaded_file)
-                image_gray = image_original.convert('L')
-                img_array = np.array(image_gray) / 255.0
-                U, s, Vt = compute_svd(img_array)
-                st.session_state.svd_cache[uploaded_file.name] = {
-                    "gray": image_gray,
-                    "array": img_array,
-                    "U": U, "s": s, "Vt": Vt
-                }
-    
-    # --- Image Selection ---
-    image_names = list(st.session_state.svd_cache.keys())
-    selected_image_name = st.selectbox("Select an image to analyze:", image_names)
-
-    # Retrieve data for the selected image from the cache
-    cached_data = st.session_state.svd_cache[selected_image_name]
-    image_gray = cached_data["gray"]
-    img_array = cached_data["array"]
-    U, s, Vt = cached_data["U"], cached_data["s"], cached_data["Vt"]
-    m, n = img_array.shape
-    max_rank = len(s)
-    total_energy = np.sum(s**2)
-    
+if os.path.exists(DEFAULT_IMAGE):
+    # Process the fixed image
+    with st.spinner(f"Processing {DEFAULT_IMAGE}..."):
+        image_original = Image.open(DEFAULT_IMAGE)
+        image_gray = image_original.convert('L')
+        img_array = np.array(image_gray) / 255.0
+        m, n = img_array.shape
+        
+        U, s, Vt = compute_svd(img_array)
+        max_rank = len(s)
+        total_energy = np.sum(s**2)
+        
     # Analysis Metrics
     cumulative_energy = np.cumsum(s**2) / total_energy
     elbow_idx = find_elbow_point(np.arange(len(cumulative_energy)), cumulative_energy)
@@ -89,32 +66,20 @@ if uploaded_files:
     k_90 = np.argmax(cumulative_energy >= 0.90) + 1
     k_95 = np.argmax(cumulative_energy >= 0.95) + 1
 
-    # Update default k_val if image changes
-    if 'current_image' not in st.session_state or st.session_state.current_image != selected_image_name:
+    # Initialize k_val if needed
+    if 'k_val_initialized' not in st.session_state:
         st.session_state.k_val = k_elbow
-        st.session_state.current_image = selected_image_name
+        st.session_state.k_val_initialized = True
 
-    def update_k_slider():
-        st.session_state.k_val = st.session_state.slider_k
-        
-    def update_k_number():
-        st.session_state.k_val = st.session_state.number_k
+    def update_k_slider(): st.session_state.k_val = st.session_state.slider_k
+    def update_k_number(): st.session_state.k_val = st.session_state.number_k
 
     # Rank Selection Control
     col_ctrl1, col_ctrl2, col_ctrl3 = st.columns([2, 1, 2])
-    
     with col_ctrl1:
-        st.slider(
-            "Select Rank k (Slider)", 
-            min_value=1, max_value=max_rank, value=st.session_state.k_val,
-            key='slider_k', on_change=update_k_slider
-        )
+        st.slider("Select Rank k", min_value=1, max_value=max_rank, value=st.session_state.k_val, key='slider_k', on_change=update_k_slider)
     with col_ctrl2:
-        st.number_input(
-            "Exact k (Input)", 
-            min_value=1, max_value=max_rank, value=st.session_state.k_val,
-            key='number_k', on_change=update_k_number
-        )
+        st.number_input("Exact k", min_value=1, max_value=max_rank, value=st.session_state.k_val, key='number_k', on_change=update_k_number)
     with col_ctrl3:
         st.markdown("##### **Optimal Suggestions:**")
         c_rec1, c_rec2, c_rec3 = st.columns(3)
@@ -124,7 +89,7 @@ if uploaded_files:
 
     k = st.session_state.k_val
 
-    # Reconstruction & Metrics
+    # Reconstruction
     reconstructed_img = U[:, :k] @ np.diag(s[:k]) @ Vt[:k, :]
     reconstructed_display = np.clip(reconstructed_img * 255, 0, 255).astype(np.uint8)
     storage_ratio = (k * (m + n + 1)) / (m * n) * 100
@@ -132,7 +97,7 @@ if uploaded_files:
     distortion = (lost_energy / total_energy) * 100 
 
     # 2. Visual Comparison
-    st.markdown("### 2. Visual Reconstruction & Error Analysis")
+    st.markdown("### 1. Visual Reconstruction & Error Analysis")
     c1, c2, c3 = st.columns(3)
     with c1: st.image(image_gray, use_container_width=True, caption=f"Original ({m}x{n})")
     with c2: st.image(reconstructed_display, use_container_width=True, caption=f"Reconstructed (k={k})")
@@ -141,15 +106,13 @@ if uploaded_files:
         error_display = error_img / error_img.max() if error_img.max() > 0 else error_img
         st.image(error_display, use_container_width=True, clamp=True, caption="Error Heatmap (|A - A_k|)")
 
-    # The rest of the sections (3, 4, 5, 6) remain largely the same, using the selected image's data ...
-
     # 3. Math & Formulas
-    st.markdown("### 3. Mathematical Analysis")
+    st.markdown("### 2. Mathematical Analysis")
     st.latex(r"\text{Storage Ratio} = \frac{" + f"{k}({m}+{n}+1)" + r"}{" + f"{m} \times {n}" + r"} = " + f"{storage_ratio:.2f}" + r"\%")
     st.latex(r"\text{Distortion} = \frac{\sum_{i=k+1}^{r} \sigma_i^2}{\sum_{i=1}^{r} \sigma_i^2} = \frac{" + f"{lost_energy:.2f}" + r"}{" + f"{total_energy:.2f}" + r"} = " + f"{distortion:.2f}" + r"\%")
 
-    # 4. Charts (Scree + R-D)
-    st.markdown("### 4. Statistical Charts")
+    # 4. Charts
+    st.markdown("### 3. Statistical Charts")
     col_chart1, col_chart2 = st.columns(2)
     with col_chart1:
         fig_scree = go.Figure()
@@ -169,10 +132,11 @@ if uploaded_files:
         fig_rd.add_trace(go.Scatter(x=[(k_elbow*(m+n+1)/(m*n)*100)], y=[(np.sum(s[k_elbow:]**2)/total_energy*100)], mode='markers', marker=dict(size=10, color='green', symbol='star'), name='Elbow'))
         fig_rd.update_layout(title="Rate-Distortion Curve", height=300, margin=dict(l=20, r=20, t=40, b=20))
         st.plotly_chart(fig_rd, use_container_width=True)
+        st.download_button(label="Download R-D Curve (HTML)", data=fig_rd.to_html(), file_name="rd_curve.html", mime="text/html")
 
     # 5. Rank-1 Layers
     st.markdown("---")
-    st.markdown("### 5. Rank-1 Layers")
+    st.markdown("### 4. Rank-1 Layers")
     st.markdown("Visualizing $A = \sum \sigma_i u_i v_i^T$: Image = Sum of Rank-1 Layers.")
     c_layer_sel, c_layer_view = st.columns([1, 2])
     with c_layer_sel:
@@ -205,7 +169,7 @@ if uploaded_files:
 
     # 6. Matrix Details
     st.markdown("---")
-    st.markdown("### 6. Matrix Values (Truncated)")
+    st.markdown("### 5. Matrix Values (Truncated)")
     mc1, mc2, mc3 = st.columns(3)
     with mc1:
         st.caption(f"U (First {k} cols)")
@@ -216,6 +180,36 @@ if uploaded_files:
     with mc3:
         st.caption(f"V^T (First {k} rows)")
         st.dataframe(pd.DataFrame(Vt[:k, :]), height=200)
+        
+    # 7. PPT Export
+    st.markdown("---")
+    st.markdown("### 6. PowerPoint Export Tools")
+    if st.button("Generate Interactive Reconstruction Animation"):
+        frames_k = np.unique(np.geomspace(1, max_rank, 30, dtype=int))
+        fig_anim = go.Figure(
+            data=[go.Heatmap(z=np.flipud(img_array), colorscale='gray', showscale=False)],
+            layout=go.Layout(
+                title="SVD Reconstruction Animation",
+                xaxis=dict(showticklabels=False),
+                yaxis=dict(showticklabels=False, scaleanchor="x"),
+                width=600, height=600 * (m/n),
+                updatemenus=[dict(type="buttons", buttons=[dict(label="Play", method="animate", args=[None])])]
+            )
+        )
+        frames = []
+        steps = []
+        with st.spinner("Rendering animation frames..."):
+            for k_frame in frames_k:
+                rec = U[:, :k_frame] @ np.diag(s[:k_frame]) @ Vt[:k_frame, :]
+                rec_flipped = np.flipud(rec) 
+                frame = go.Frame(data=[go.Heatmap(z=rec_flipped, colorscale='gray', showscale=False, zmin=0, zmax=1)], name=str(k_frame))
+                frames.append(frame)
+                step = dict(method="animate", args=[[str(k_frame)], dict(mode="immediate", frame=dict(duration=300, redraw=True), transition=dict(duration=0))], label=str(k_frame))
+                steps.append(step)
+        fig_anim.frames = frames
+        fig_anim.layout.sliders = [dict(active=0, steps=steps, currentvalue={"prefix": "Rank k: "})]
+        st.plotly_chart(fig_anim, use_container_width=True)
+        st.download_button(label="Download Animation HTML", data=fig_anim.to_html(), file_name="svd_animation.html", mime="text/html")
 
 else:
-    st.info("Please upload one or more images to begin.")
+    st.error(f"Error: Image file '{DEFAULT_IMAGE}' not found. Please ensure it is in the GitHub repository.")
